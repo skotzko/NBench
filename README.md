@@ -52,4 +52,16 @@ ways of running bmarks
 ## Running a performance test
 1. Must have a `[PerformanceBenchmark]` attribute method
     1. can be a void w/o args, or void that takes a benchmark context
-2.
+
+
+## Components
+
+1. Benchmark
+1. BenchmarkRun
+2. Selector
+3. Collector
+4. Metric
+4. BenchmarkStat
+    5.  PerSecondBenchmarkStat
+1. MeasureBucket
+    2. MetricRunReport
