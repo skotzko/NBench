@@ -7,6 +7,7 @@ using System.Diagnostics.Contracts;
 using System.Linq;
 using System.Reflection;
 using NBench.Reporting;
+using NBench.Reporting.Targets;
 
 namespace NBench.Sdk.Compiler
 {
@@ -21,12 +22,19 @@ namespace NBench.Sdk.Compiler
 
         public ReflectionDiscovery(IBenchmarkOutput output)
         {
-            Output = output;
+            Output = _reflectionOutput = output;
         }
+
+        /// <summary>
+        /// Bit of a hack - used internally by <see cref="ReflectionDiscovery"/> for
+        /// logging compilation warnings.
+        /// 
+        /// Writes to the console by default, but can be overridden through the constructor.
+        /// </summary>
+        private static IBenchmarkOutput _reflectionOutput = new ConsoleBenchmarkOutput();
 
         public IBenchmarkOutput Output { get; }
 
-        //TODO: https://github.com/petabridge/NBench/issues/9
         public IEnumerable<Benchmark> FindBenchmarks(Assembly targetAssembly)
         {
             var benchmarkMetaData = ClassesWithPerformanceBenchmarks(targetAssembly).SelectMany(CreateBenchmarksForClass).ToList();
@@ -148,7 +156,7 @@ namespace NBench.Sdk.Compiler
             
             return targetAssembly.DefinedTypes.Where(
                 x =>
-                    x.DeclaredMethods.Any(MethodHasValidBenchmark)).ToList();
+                    x.GetMethods().Any(MethodHasValidBenchmark) && !x.IsAbstract && x.IsClass).ToList();
         }
 
         public static IReadOnlyList<BenchmarkClassMetadata> CreateBenchmarksForClass(Type classWithBenchmarks)
@@ -159,11 +167,15 @@ namespace NBench.Sdk.Compiler
         public static IReadOnlyList<BenchmarkClassMetadata> CreateBenchmarksForClass(TypeInfo classWithBenchmarks)
         {
             Contract.Requires(classWithBenchmarks != null);
+
+            if(IsTypeInvalidForBenchmarks(classWithBenchmarks))
+                return new List<BenchmarkClassMetadata>();
+
             var setupMethod = GetSetupMethod(classWithBenchmarks);
             var cleanupMethod = GetCleanupMethod(classWithBenchmarks);
 
             var allPerfMethods =
-                classWithBenchmarks.DeclaredMethods.Where(
+                classWithBenchmarks.GetMethods().Where(
                     MethodHasValidBenchmark).ToList();
 
             var benchmarks = new List<BenchmarkClassMetadata>(allPerfMethods.Count);
@@ -178,22 +190,50 @@ namespace NBench.Sdk.Compiler
 
         private static bool MethodHasValidBenchmark(MethodInfo x)
         {
-            return x.GetCustomAttributes(PerformanceBenchmarkAttributeType, true).Any()
-                        && x.GetCustomAttributes(MeasurementAttributeType, true).Any();
+            var hasPerformanceBenchmarkAttribute = x.IsDefined(PerformanceBenchmarkAttributeType, true);
+            var hasAtLeastOneMeasurementAttribute = x.IsDefined(MeasurementAttributeType, true);
+
+            // code below is for adding interface support
+            //var bla =
+            //   (from @interface in x.DeclaringType.GetInterfaces()
+            //    let map = x.DeclaringType.GetInterfaceMap(@interface)
+            //    let index = Array.IndexOf(map.TargetMethods, x)
+            //    where index >= 0
+            //    select map.InterfaceMethods[index]).FirstOrDefault();
+            //var hasPerformanceBenchmarkAttributeOnInterface = bla.IsDefined(PerformanceBenchmarkAttributeType), true);
+
+
+            /*
+             * If user defined a PerformanceBenchmark attribute but never added on any Measurement
+             * attributes, then we need to log a warning here.
+             */
+            if (hasPerformanceBenchmarkAttribute && !hasAtLeastOneMeasurementAttribute)
+            {
+                _reflectionOutput.Warning($"{x.DeclaringType?.Name}+{x.Name} has a declared PerformanceBenchmarkAttribute but no declared measurements. Skipping...");
+            }
+
+            return hasPerformanceBenchmarkAttribute && hasAtLeastOneMeasurementAttribute;
         }
 
         public static BenchmarkMethodMetadata GetSetupMethod(TypeInfo classWithBenchmarks)
         {
             Contract.Requires(classWithBenchmarks != null);
-            if (
-                !classWithBenchmarks.DeclaredMethods.Any(
-                    y => y.GetCustomAttributes(typeof (PerfSetupAttribute), true).Any()))
+            var setupMethods = classWithBenchmarks.GetMethods().Where(
+                y => y.IsDefined(typeof (PerfSetupAttribute), true)).ToList();
+            if (!setupMethods.Any() || IsTypeInvalidForBenchmarks(classWithBenchmarks))
                 return BenchmarkMethodMetadata.Empty;
 
-            //TODO: https://github.com/petabridge/NBench/issues/10
-            var matchingMethod =
-                classWithBenchmarks.DeclaredMethods.Single(
-                    x => x.GetCustomAttributes(typeof (PerfSetupAttribute), true).Any());
+            // Need to log and throw an error here for benchmarks that have multiple setups declared
+            if (setupMethods.Count > 1)
+            {
+                var ex =
+                    new NBenchException(
+                        $"{classWithBenchmarks.Name} has a declared {setupMethods.Count} PerfSetupAttributes. A maximum of 1 is allowed per class. Failing...");
+                _reflectionOutput.Error(ex.Message);
+                throw ex;
+            }
+
+            var matchingMethod = setupMethods.Single();
 
             var takesContext = MethodTakesBenchmarkContext(matchingMethod);
             return new BenchmarkMethodMetadata(matchingMethod, takesContext, false);
@@ -202,18 +242,31 @@ namespace NBench.Sdk.Compiler
         public static BenchmarkMethodMetadata GetCleanupMethod(TypeInfo classWithBenchmarks)
         {
             Contract.Requires(classWithBenchmarks != null);
-            if (
-                !classWithBenchmarks.DeclaredMethods.Any(
-                    y => y.GetCustomAttributes(typeof (PerfCleanupAttribute), true).Any()))
+            var cleanupMethods = classWithBenchmarks.GetMethods().Where(
+               y => y.IsDefined(typeof(PerfCleanupAttribute), true)).ToList();
+            if (!cleanupMethods.Any() || IsTypeInvalidForBenchmarks(classWithBenchmarks))
                 return BenchmarkMethodMetadata.Empty;
 
-            //TODO: https://github.com/petabridge/NBench/issues/10
-            var matchingMethod =
-                classWithBenchmarks.DeclaredMethods.Single(
-                    x => x.GetCustomAttributes(typeof (PerfCleanupAttribute), true).Any());
+            // Need to log and throw an error here for benchmarks that have multiple setups declared
+            if (cleanupMethods.Count > 1)
+            {
+                var ex =
+                    new NBenchException(
+                        $"{classWithBenchmarks.Name} has a declared {cleanupMethods.Count} PerfCleanupAttributes. A maximum of 1 is allowed per class. Failing...");
+                _reflectionOutput.Error(ex.Message);
+                throw ex;
+            }
+
+            var matchingMethod = cleanupMethods.Single();
 
             var takesContext = MethodTakesBenchmarkContext(matchingMethod);
             return new BenchmarkMethodMetadata(matchingMethod, takesContext, false);
+        }
+
+        public static bool IsTypeInvalidForBenchmarks(TypeInfo info)
+        {
+            Contract.Requires(info != null);
+            return info.IsAbstract || info.IsInterface;
         }
 
         public static bool MethodTakesBenchmarkContext(MethodInfo info)

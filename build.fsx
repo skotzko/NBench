@@ -3,6 +3,7 @@
 
 open System
 open System.IO
+open System.Text
 open Fake
 open Fake.FileUtils
 open Fake.TaskRunnerHelper
@@ -39,7 +40,8 @@ let release = if isPreRelease then ReleaseNotesHelper.ReleaseNotes.New(version, 
 // Directories
 
 let binDir = "bin"
-let testOutput = "TestResults"
+let testOutput = FullName "TestResults"
+let perfOutput = FullName "PerfResults"
 
 let nugetDir = binDir @@ "nuget"
 let workingDir = binDir @@ "build"
@@ -125,6 +127,42 @@ Target "RunTests" <| fun _ ->
 Target "CleanTests" <| fun _ ->
     DeleteDir testOutput
 
+
+//--------------------------------------------------------------------------------
+// NBench targets
+//--------------------------------------------------------------------------------
+Target "NBench" <| fun _ ->
+    let testSearchPath =
+        let assemblyFilter = getBuildParamOrDefault "spec-assembly" String.Empty
+        sprintf "tests/**/bin/Release/*%s*.Tests.Performance.dll" assemblyFilter
+
+    mkdir perfOutput
+    let nbenchTestPath = findToolInSubPath "NBench.Runner.exe" "bin/NBench.Runner*"
+    let nbenchTestAssemblies = !! testSearchPath
+    printfn "Using NBench.Runner: %s" nbenchTestPath
+
+    let runNBench assembly =
+        let spec = getBuildParam "spec"
+
+        let args = new StringBuilder()
+                |> append assembly
+                |> append (sprintf "output-directory=\"%s\"" perfOutput)
+                |> toText
+
+        let result = ExecProcess(fun info -> 
+            info.FileName <- nbenchTestPath
+            info.WorkingDirectory <- (Path.GetDirectoryName (FullName nbenchTestPath))
+            info.Arguments <- args) (System.TimeSpan.FromMinutes 15.0) (* Reasonably long-running task. *)
+        if result <> 0 then failwithf "NBench.Runner failed. %s %s" nbenchTestPath args
+    
+    nbenchTestAssemblies |> Seq.iter (runNBench)
+
+//--------------------------------------------------------------------------------
+// Clean NBench output
+Target "CleanPerf" <| fun _ ->
+    DeleteDir perfOutput
+
+
 //--------------------------------------------------------------------------------
 // Nuget targets 
 //--------------------------------------------------------------------------------
@@ -132,8 +170,7 @@ module Nuget =
      // add NBench dependency for other projects
     let getDependencies project =
         match project with
-        | "NBench" -> []
-        | _ -> ["NBench", release.NugetVersion]
+        | _ -> []
 
      // used to add -pre suffix to pre-release packages
     let getProjectVersion project =
@@ -162,6 +199,21 @@ let createNugetPackages _ =
 
     let getDirName workingDir dirCount =
         workingDir + dirCount.ToString()
+
+    let getReleaseFiles project releaseDir =
+        match project with
+        | "NBench.Runner" -> 
+            !! (releaseDir @@ project + ".dll")
+            ++ (releaseDir @@ "NBench.dll")
+            ++ (releaseDir @@ project + ".exe")
+            ++ (releaseDir @@ project + ".pdb")
+            ++ (releaseDir @@ "NBench.pdb")
+            ++ (releaseDir @@ project + ".xml")
+        | _ ->
+            !! (releaseDir @@ project + ".dll")
+            ++ (releaseDir @@ project + ".exe")
+            ++ (releaseDir @@ project + ".pdb")
+            ++ (releaseDir @@ project + ".xml")
 
     CleanDir workingDir
 
@@ -201,10 +253,7 @@ let createNugetPackages _ =
         printfn "Creating output directory %s" libDir
         ensureDirectory libDir
         CleanDir libDir
-        !! (releaseDir @@ project + ".dll")
-        ++ (releaseDir @@ project + ".exe")
-        ++ (releaseDir @@ project + ".pdb")
-        ++ (releaseDir @@ project + ".xml")
+        getReleaseFiles project releaseDir
         |> CopyFiles libDir
 
         // Copy all src-files (.cs and .fs files) to workingDir/src
@@ -256,12 +305,18 @@ let publishNugetPackages _ =
                 !! (nugetDir @@ "*.nupkg") 
                 -- (nugetDir @@ "*.symbols.nupkg") |> Seq.sortBy(fun x -> x.ToLower())
             for package in normalPackages do
-                publishPackage (getBuildParamOrDefault "nugetpublishurl" "") (getBuildParam "nugetkey") 3 package
+                try
+                    publishPackage (getBuildParamOrDefault "nugetpublishurl" "") (getBuildParam "nugetkey") 3 package
+                with exn ->
+                    printfn "%s" exn.Message
 
         if shouldPushSymbolsPackages then
             let symbolPackages= !! (nugetDir @@ "*.symbols.nupkg") |> Seq.sortBy(fun x -> x.ToLower())
             for package in symbolPackages do
-                publishPackage (getBuildParam "symbolspublishurl") (getBuildParam "symbolskey") 3 package
+                try
+                    publishPackage (getBuildParam "symbolspublishurl") (getBuildParam "symbolskey") 3 package
+                with exn ->
+                    printfn "%s" exn.Message
 
 Target "Nuget" <| fun _ -> 
     createNugetPackages()
@@ -346,12 +401,17 @@ Target "All" DoNothing
 
 // tests dependencies
 "CleanTests" ==> "RunTests"
-"CleanNuget" ==> "BuildRelease" ==> "Nuget"
+
+
+// perf dependencies
+"CleanPerf" ==> "NBench"
 
 // nuget dependencies
+"CleanNuget" ==> "BuildRelease" ==> "Nuget"
 
 "BuildRelease" ==> "All"
 "RunTests" ==> "All"
+"NBench" ==> "All"
 "Nuget" ==> "All"
 
 Target "AllTests" DoNothing //used for Mono builds, due to Mono 4.0 bug with FAKE / NuGet https://github.com/fsharp/fsharp/issues/427

@@ -35,8 +35,14 @@
     <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="CounterPerfSpecs.cs" />
+    <Compile Include="BenchmarkMemoryAllocationSpec.cs" />
+    <Compile Include="MemoryAllocationSpec.cs" />
+    <Compile Include="CombinedPerfSpecs.cs" />
+    <Compile Include="CounterPerfSpec.cs" />
+    <Compile Include="IterationModeMeasurementSpec.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="ThroughputLoopPerformanceSpec_Int64.cs" />
+    <Compile Include="ThroughputLoopPerformanceSpec_Int32.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\NBench\NBench.csproj">

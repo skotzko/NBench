@@ -22,8 +22,7 @@ namespace NBench.Sdk
         public ReflectionBenchmarkInvoker(BenchmarkClassMetadata metadata)
         {
             _metadata = metadata;
-            //TODO: https://github.com/petabridge/NBench/issues/11
-            BenchmarkName = metadata.BenchmarkClass.FullName;
+            BenchmarkName = $"{metadata.BenchmarkClass.FullName}+{metadata.Run.InvocationMethod.Name}";
         }
 
         public string BenchmarkName { get; }
@@ -36,6 +35,22 @@ namespace NBench.Sdk
             _runAction = Compile(_metadata.Run);
 
             _setupAction(context);
+        }
+
+        public void InvokePerfSetup(long runCount, BenchmarkContext context)
+        {
+            InvokePerfSetup(context);
+
+            var previousRunAction = _runAction;
+
+            _runAction = ctx =>
+            {
+                for (long i = runCount; i != 0;)
+                {
+                    previousRunAction(ctx);
+                    --i;
+                }
+            };
         }
 
         public void InvokeRun(BenchmarkContext context)
